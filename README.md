@@ -108,7 +108,8 @@ Open your browser at **http://localhost:8000**
 |---|---|---|
 | `upload_time` | `"09:00"` | Default daily trigger time (HH:MM, local) |
 | `privacy_status` | `"public"` | Default privacy for new videos |
-| `default_category` | `"22"` | YouTube category ID fallback |
+| `default_category` | `"2"` | Autos & Vehicles category used for uploads |
+| `ai_metadata_enabled` | `true` | Generate optional automotive descriptions and tags with Groq/Gemini |
 | `gemini_extra_prompt` | `""` | Extra instructions appended to the AI prompt |
 | `drive_queue_folder_id` | `""` | Fallback Drive folder (overridden per-channel) |
 
@@ -131,7 +132,8 @@ Download to temp file
 Extract video frames (ffmpeg) → Groq Vision reads the frames
        │  (falls back to text-only if ffmpeg not installed)
        ▼
-AI generates: title · description · tags · category
+Filename supplies exact title · category is Autos & Vehicles (2)
+AI optionally enriches description and tags only
        │
        ▼
 Upload to YouTube with publishAt timestamp
