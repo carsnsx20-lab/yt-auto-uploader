@@ -4,6 +4,29 @@
   "privacy_status": "public",
   "default_category": "2",
   "ai_metadata_enabled": true,
+  "automotive_metadata": {
+    "channel_name": "The Auto Pit",
+    "default_tags": [
+      "cars",
+      "automotive",
+      "car culture",
+      "car enthusiast",
+      "car facts",
+      "car shorts",
+      "vehicles",
+      "auto",
+      "The Auto Pit"
+    ],
+    "description_template": "{VIDEO_TITLE}\n\nAutomotive content featuring cars, performance, technology, and car culture.\n\nSubscribe to {CHANNEL_NAME} for automotive Shorts.\n\n#Shorts #Cars #Automotive",
+    "max_tags": 25,
+    "keyword_tags": {
+      "bmw": ["BMW", "BMW cars", "BMW performance"],
+      "audi": ["Audi", "Audi cars", "Audi performance"],
+      "mercedes": ["Mercedes-Benz", "Mercedes AMG"],
+      "porsche": ["Porsche", "Porsche cars"],
+      "toyota": ["Toyota", "Toyota cars"]
+    }
+  },
   "gemini_extra_prompt": "",
   "drive_queue_folder_id": "",
   "drive_done_folder_id": ""

@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -70,11 +71,76 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+DEFAULT_AUTOMOTIVE_METADATA = {
+    # Edit this section or override "automotive_metadata" in config.json.
+    "channel_name": "The Auto Pit",
+    "default_tags": [
+        "cars",
+        "automotive",
+        "car culture",
+        "car enthusiast",
+        "car facts",
+        "car shorts",
+        "vehicles",
+        "auto",
+        "The Auto Pit",
+    ],
+    "description_template": (
+        "{VIDEO_TITLE}\n\n"
+        "Automotive content featuring cars, performance, technology, and car culture.\n\n"
+        "Subscribe to {CHANNEL_NAME} for automotive Shorts.\n\n"
+        "#Shorts #Cars #Automotive"
+    ),
+    "max_tags": 25,
+    "keyword_tags": {
+        # Manufacturers
+        "bmw": ["BMW", "BMW cars", "BMW performance"],
+        "audi": ["Audi", "Audi cars", "Audi performance"],
+        "mercedes": ["Mercedes-Benz", "Mercedes AMG"],
+        "porsche": ["Porsche", "Porsche cars"],
+        "toyota": ["Toyota", "Toyota cars"],
+        "ford": ["Ford", "Ford cars"],
+        "chevrolet": ["Chevrolet", "Chevrolet cars"],
+        "honda": ["Honda", "Honda cars"],
+        "nissan": ["Nissan", "Nissan cars"],
+        "lexus": ["Lexus", "Lexus cars"],
+        "tesla": ["Tesla", "Tesla cars", "electric vehicles"],
+        "volkswagen": ["Volkswagen", "Volkswagen cars"],
+        "subaru": ["Subaru", "Subaru cars"],
+        "mazda": ["Mazda", "Mazda cars"],
+        "ferrari": ["Ferrari", "Ferrari cars"],
+        "lamborghini": ["Lamborghini", "Lamborghini cars"],
+        "mclaren": ["McLaren", "McLaren cars"],
+        "dodge": ["Dodge", "Dodge cars"],
+        "jeep": ["Jeep", "Jeep vehicles"],
+        "hyundai": ["Hyundai", "Hyundai cars"],
+        "kia": ["Kia", "Kia cars"],
+        "acura": ["Acura", "Acura cars"],
+        "infiniti": ["Infiniti", "Infiniti cars"],
+        "volvo": ["Volvo", "Volvo cars"],
+        "rivian": ["Rivian", "electric vehicles"],
+        # Models, systems, and automotive topics
+        "m340i": ["BMW M340i", "sports sedan"],
+        "quattro": ["Audi Quattro", "all-wheel drive", "AWD"],
+        "amg": ["AMG performance"],
+        "supra": ["Toyota Supra", "sports cars"],
+        "corvette": ["Chevrolet Corvette", "sports cars"],
+        "gtr": ["Nissan GT-R", "performance cars"],
+        "gt-r": ["Nissan GT-R", "performance cars"],
+        "supercharged": ["supercharged cars", "supercharger"],
+        "awd": ["all-wheel drive", "AWD"],
+        "4wd": ["four-wheel drive", "4WD"],
+        "drifting": ["drifting", "motorsport"],
+        "drag race": ["drag racing", "car performance"],
+    },
+}
+
 DEFAULT_CONFIG = {
     "upload_time":          "09:00",   # HH:MM local time
     "privacy_status":       "public",  # public | unlisted | private
     "default_category":     "2",       # Autos & Vehicles
-    "ai_metadata_enabled":  True,      # optional AI descriptions and tags
+    "ai_metadata_enabled":  True,      # optional AI descriptions
+    "automotive_metadata":  DEFAULT_AUTOMOTIVE_METADATA,
     "gemini_api_key":       "",        # aistudio.google.com/app/apikey
     "gemini_extra_prompt":  "",        # extra instructions for Gemini
     "drive_queue_folder_id": "",       # Drive folder ID where your videos live
@@ -98,6 +164,109 @@ def load_config() -> dict:
     if os.getenv("GROQ_API_KEY"):
         cfg["groq_api_key"] = os.getenv("GROQ_API_KEY")
     return cfg
+
+
+YOUTUBE_TAG_CHARACTER_LIMIT = 500
+
+
+def _automotive_metadata_config(config: dict) -> dict:
+    """Merge user-editable automotive metadata overrides with local defaults."""
+    custom = config.get("automotive_metadata", {})
+    if not isinstance(custom, dict):
+        log.warning("automotive_metadata must be an object; using built-in defaults.")
+        custom = {}
+
+    settings = {**DEFAULT_AUTOMOTIVE_METADATA, **custom}
+    custom_keywords = custom.get("keyword_tags", {})
+    if not isinstance(custom_keywords, dict):
+        log.warning(
+            "automotive_metadata.keyword_tags must be an object; "
+            "using built-in keyword tags."
+        )
+        custom_keywords = {}
+    settings["keyword_tags"] = {
+        **DEFAULT_AUTOMOTIVE_METADATA["keyword_tags"],
+        **custom_keywords,
+    }
+    return settings
+
+
+def _youtube_tag_character_count(tags: list[str]) -> int:
+    """Calculate YouTube's 500-character tag-list cost."""
+    if not tags:
+        return 0
+    tag_cost = sum(len(tag) + (2 if " " in tag else 0) for tag in tags)
+    return tag_cost + len(tags) - 1  # Commas between tags count.
+
+
+def _title_contains_keyword(video_title: str, keyword: str) -> bool:
+    """Match a whole keyword or phrase without partial-word brand matches."""
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(keyword)}(?![A-Za-z0-9])"
+    return re.search(pattern, video_title, flags=re.IGNORECASE) is not None
+
+
+def build_video_tags(video_title: str, config: dict) -> list[str]:
+    """Build deterministic, deduplicated tags from local automotive settings."""
+    settings = _automotive_metadata_config(config)
+    default_tags = settings.get("default_tags", [])
+    if not isinstance(default_tags, list):
+        log.warning(
+            "automotive_metadata.default_tags must be a list; "
+            "using built-in default tags."
+        )
+        default_tags = DEFAULT_AUTOMOTIVE_METADATA["default_tags"]
+
+    max_tags = settings.get("max_tags", DEFAULT_AUTOMOTIVE_METADATA["max_tags"])
+    if not isinstance(max_tags, int) or isinstance(max_tags, bool) or max_tags < 1:
+        log.warning("automotive_metadata.max_tags must be a positive integer; using 25.")
+        max_tags = DEFAULT_AUTOMOTIVE_METADATA["max_tags"]
+
+    candidates = list(default_tags)
+    for keyword, keyword_tags in settings["keyword_tags"].items():
+        if not isinstance(keyword, str) or not keyword.strip():
+            continue
+        if not _title_contains_keyword(video_title, keyword.strip()):
+            continue
+        if isinstance(keyword_tags, str):
+            candidates.append(keyword_tags)
+        elif isinstance(keyword_tags, list):
+            candidates.extend(keyword_tags)
+
+    tags = []
+    seen = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        tag = candidate.strip()
+        dedupe_key = tag.casefold()
+        if not tag or dedupe_key in seen:
+            continue
+        if len(tags) >= max_tags:
+            break
+        if _youtube_tag_character_count([*tags, tag]) > YOUTUBE_TAG_CHARACTER_LIMIT:
+            continue
+        tags.append(tag)
+        seen.add(dedupe_key)
+    return tags
+
+
+def build_default_description(video_title: str, config: dict) -> str:
+    """Render the local automotive description without any AI dependency."""
+    settings = _automotive_metadata_config(config)
+    template = settings.get(
+        "description_template",
+        DEFAULT_AUTOMOTIVE_METADATA["description_template"],
+    )
+    if not isinstance(template, str):
+        log.warning(
+            "automotive_metadata.description_template must be a string; "
+            "using the built-in template."
+        )
+        template = DEFAULT_AUTOMOTIVE_METADATA["description_template"]
+    return (
+        template.replace("{VIDEO_TITLE}", video_title)
+        .replace("{CHANNEL_NAME}", str(settings["channel_name"]))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,15 +443,14 @@ Do not generate, rewrite, or return a title.
 
 Analyze the visible vehicle, driving scene, components, and automotive topic. Return ONLY a valid JSON object — no markdown or explanation:
 {{
-  "description": "A concise, accurate automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",
-  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]
+  "description": "A concise, accurate automotive description followed by relevant hashtags including #Shorts #Cars #Automotive"
 }}
 
 Rules:
 - Discuss only automotive content supported by the screenshots or fixed title.
 - Keep the description concise and useful.
-- Include relevant makes, models, systems, or comparison terms in tags when supported.
-- Do not return title or categoryId fields.
+- Never invent specifications, vehicle models, horsepower figures, or technical claims.
+- Do not return title, tags, or categoryId fields.
 {extra}"""
 
 _TEXT_ONLY_PROMPT = """You are an automotive YouTube Shorts metadata expert.
@@ -292,21 +460,20 @@ Do not generate, rewrite, or return a title.
 
 Use that title as context and return ONLY a valid JSON object:
 {{
-  "description": "A concise automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",
-  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]
+  "description": "A concise automotive description followed by relevant hashtags including #Shorts #Cars #Automotive"
 }}
 
 Rules:
 - Keep the description accurate to the fixed title; do not invent unsupported specifications.
-- Include relevant makes, models, systems, or comparison terms in tags.
-- Do not return title or categoryId fields.
+- Never invent specifications, vehicle models, horsepower figures, or technical claims.
+- Do not return title, tags, or categoryId fields.
 {extra}"""
 
 
 def generate_metadata_with_groq(
     config: dict, video_path: Path = None, video_title: str = ""
 ) -> dict | None:
-    """Generate optional automotive descriptions and tags with Groq."""
+    """Generate an optional automotive description with Groq."""
     import base64
     api_key = config.get("groq_api_key", "").strip()
     if not api_key:
@@ -321,7 +488,7 @@ def generate_metadata_with_groq(
     extra  = config.get("gemini_extra_prompt", "").strip()
     extra_line = f"\nExtra instructions: {extra}" if extra else ""
 
-    # ── Vision mode: extract frames and let Groq read the actual texts ──
+    # Vision mode: extract frames so Groq can inspect the actual vehicle content.
     if video_path and video_path.exists():
         frames = _extract_video_frames(video_path)
         if frames:
@@ -374,9 +541,7 @@ def _parse_groq_response(raw: str) -> dict | None:
         parts = raw.split("```")
         raw   = parts[1][4:].strip() if parts[1].startswith("json") else parts[1].strip()
     try:
-        metadata = json.loads(raw)
-        log.info(f"  Tags ({len(metadata.get('tags', []))}): {metadata.get('tags', [])}")
-        return metadata
+        return json.loads(raw)
     except json.JSONDecodeError as e:
         log.error(f"Groq returned invalid JSON: {e}\n{raw[:300]}")
         return None
@@ -400,13 +565,12 @@ def generate_metadata_with_gemini(
         "Do not generate, rewrite, or return a title.\n\n"
         "Return ONLY a valid JSON object — no markdown, no explanation:\n"
         "{\n"
-        '  "description": "A concise automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",\n'
-        '  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]\n'
+        '  "description": "A concise automotive description followed by relevant hashtags including #Shorts #Cars #Automotive"\n'
         "}\n\n"
         "Rules:\n"
         "- Keep the description accurate to the fixed title; do not invent unsupported specifications.\n"
-        "- Include relevant makes, models, systems, or comparison terms in tags.\n"
-        "- Do not return title or categoryId fields.\n"
+        "- Never invent specifications, vehicle models, horsepower figures, or technical claims.\n"
+        "- Do not return title, tags, or categoryId fields.\n"
         f"{('- Additional: ' + extra) if extra else ''}"
     )
 
@@ -447,7 +611,6 @@ def generate_metadata_with_gemini(
         log.error(f"Gemini returned invalid JSON: {e}\nOutput: {raw[:500]}")
         return None
 
-    log.info(f"  Tags ({len(metadata.get('tags', []))}): {metadata.get('tags', [])}")
     return metadata
 
 
@@ -555,7 +718,7 @@ def upload_job(channel_config: dict = None, publish_at=None) -> "dict | None":
         download_drive_file(drive, file_id, tmp_path)
         log.info("Download complete.")
 
-        # AI metadata is optional and can enrich only the description and tags.
+        # AI metadata is optional and can enrich only the description.
         ai_meta = None
         if config.get("ai_metadata_enabled", True):
             try:
@@ -574,11 +737,21 @@ def upload_job(channel_config: dict = None, publish_at=None) -> "dict | None":
         else:
             log.info("AI metadata disabled — using filename-based automotive metadata.")
 
-        fallback_description = f"{video_title}\n\n#Cars #Automotive #Shorts"
+        if ai_meta is not None and not isinstance(ai_meta, dict):
+            log.warning("AI metadata was not an object — using local automotive metadata.")
+            ai_meta = None
+
+        fallback_description = build_default_description(video_title, config)
+        ai_description = (ai_meta or {}).get("description")
+        description = (
+            ai_description.strip()
+            if isinstance(ai_description, str) and ai_description.strip()
+            else fallback_description
+        )
         meta = {
             "title":         video_title,
-            "description":   (ai_meta or {}).get("description") or fallback_description,
-            "tags":          (ai_meta or {}).get("tags") or ["Cars", "Automotive", "Shorts"],
+            "description":   description,
+            "tags":          build_video_tags(video_title, config),
             "categoryId":    "2",
             "privacyStatus": config["privacy_status"],
         }
