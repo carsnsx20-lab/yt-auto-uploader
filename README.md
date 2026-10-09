@@ -1,8 +1,8 @@
 # YT Auto Uploader
 
-A self-hosted YouTube automation tool with a web dashboard. It pulls videos from a Google Drive folder, generates AI-written titles, descriptions, and tags using Groq or Gemini, and schedules them directly on YouTube — fully automatically, every day.
+A self-hosted YouTube automation tool with a web dashboard. It pulls videos from Google Drive, uses each filename as the exact title, builds automotive tags locally, optionally generates a description with Groq or Gemini, and schedules uploads automatically.
 
-Built for YouTube Shorts channels that post text-message story reels (or any vertical video format).
+Configured for automotive YouTube Shorts channels, including The Auto Pit.
 
 ---
 
@@ -10,7 +10,7 @@ Built for YouTube Shorts channels that post text-message story reels (or any ver
 
 - **Multi-channel support** — manage as many YouTube channels as you want from one dashboard
 - **Google Drive queue** — drop videos in a Drive folder; the uploader picks the oldest unuploaded one each run
-- **AI metadata generation** — Groq Vision reads your actual video frames and writes click-worthy titles, descriptions, and tags
+- **Automotive metadata** — local branded tags with optional AI-written automotive descriptions
 - **Scheduled uploads** — set a daily trigger time and uploads-per-day count per channel
 - **YouTube Shorts scheduling** — multiple videos per day are spaced out and set to `publishAt` so they release throughout the day
 - **Web dashboard** — live status, 7-day upload chart, system logs, and one-click controls at `http://localhost:8000`
@@ -109,7 +109,8 @@ Open your browser at **http://localhost:8000**
 | `upload_time` | `"09:00"` | Default daily trigger time (HH:MM, local) |
 | `privacy_status` | `"public"` | Default privacy for new videos |
 | `default_category` | `"2"` | Autos & Vehicles category used for uploads |
-| `ai_metadata_enabled` | `true` | Generate optional automotive descriptions and tags with Groq/Gemini |
+| `ai_metadata_enabled` | `true` | Generate an optional automotive description with Groq/Gemini |
+| `automotive_metadata` | See `config.example.json` | Editable channel name, description template, default tags, tag cap, and filename keyword mapping |
 | `gemini_extra_prompt` | `""` | Extra instructions appended to the AI prompt |
 | `drive_queue_folder_id` | `""` | Fallback Drive folder (overridden per-channel) |
 
@@ -133,7 +134,7 @@ Extract video frames (ffmpeg) → Groq Vision reads the frames
        │  (falls back to text-only if ffmpeg not installed)
        ▼
 Filename supplies exact title · category is Autos & Vehicles (2)
-AI optionally enriches description and tags only
+AI optionally enriches the description; tags are generated locally
        │
        ▼
 Upload to YouTube with publishAt timestamp

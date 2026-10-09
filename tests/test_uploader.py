@@ -6,6 +6,19 @@ from unittest.mock import patch
 import uploader
 
 
+DEFAULT_AUTOMOTIVE_TAGS = [
+    "cars",
+    "automotive",
+    "car culture",
+    "car enthusiast",
+    "car facts",
+    "car shorts",
+    "vehicles",
+    "auto",
+    "The Auto Pit",
+]
+
+
 class _UploadRequest:
     def next_chunk(self):
         return None, {"id": "video-id"}
@@ -127,13 +140,30 @@ class UploadJobTitleTests(unittest.TestCase):
         return result, youtube.videos_resource.insert_kwargs, groq, gemini
 
     def test_drive_filenames_become_exact_titles_without_extensions(self):
-        cases = {
-            "BMW M340i Is Underrated.mp4": "BMW M340i Is Underrated",
-            "Why Audi Quattro Works.mov": "Why Audi Quattro Works",
-            "Mercedes AMG vs BMW M.mp4": "Mercedes AMG vs BMW M",
-        }
+        cases = (
+            (
+                "BMW M340i Is Underrated.mp4",
+                "BMW M340i Is Underrated",
+                {"BMW", "BMW cars", "BMW performance", "BMW M340i"},
+            ),
+            (
+                "Why Audi Quattro Works.mov",
+                "Why Audi Quattro Works",
+                {"Audi", "Audi cars", "Audi performance", "Audi Quattro", "AWD"},
+            ),
+            (
+                "Porsche 911 at the Track.mp4",
+                "Porsche 911 at the Track",
+                {"Porsche", "Porsche cars"},
+            ),
+            (
+                "Completely Unrelated Subject.mp4",
+                "Completely Unrelated Subject",
+                set(),
+            ),
+        )
 
-        for file_name, expected_title in cases.items():
+        for file_name, expected_title, expected_specific_tags in cases:
             with self.subTest(file_name=file_name):
                 result, request, groq, gemini = self._run_job(file_name)
                 snippet = request["body"]["snippet"]
@@ -142,10 +172,22 @@ class UploadJobTitleTests(unittest.TestCase):
                 self.assertEqual(snippet["title"], expected_title)
                 self.assertEqual(
                     snippet["description"],
-                    f"{expected_title}\n\n#Cars #Automotive #Shorts",
+                    (
+                        f"{expected_title}\n\n"
+                        "Automotive content featuring cars, performance, technology, "
+                        "and car culture.\n\n"
+                        "Subscribe to The Auto Pit for automotive Shorts.\n\n"
+                        "#Shorts #Cars #Automotive"
+                    ),
                 )
                 self.assertEqual(snippet["categoryId"], "2")
-                self.assertEqual(snippet["tags"], ["Cars", "Automotive", "Shorts"])
+                self.assertEqual(
+                    snippet["tags"][:len(DEFAULT_AUTOMOTIVE_TAGS)],
+                    DEFAULT_AUTOMOTIVE_TAGS,
+                )
+                self.assertTrue(expected_specific_tags.issubset(snippet["tags"]))
+                if not expected_specific_tags:
+                    self.assertEqual(snippet["tags"], DEFAULT_AUTOMOTIVE_TAGS)
                 self.assertEqual(
                     request["body"]["status"],
                     {
@@ -169,7 +211,7 @@ class UploadJobTitleTests(unittest.TestCase):
         ai_meta = {
             "title": "AI Replaced This Title #Shorts",
             "description": "AI automotive description",
-            "tags": ["BMW", "M340i"],
+            "tags": ["storytime", "relationship drama"],
             "categoryId": "24",
         }
 
@@ -182,7 +224,13 @@ class UploadJobTitleTests(unittest.TestCase):
         self.assertEqual(result["title"], "BMW M340i Is Underrated")
         self.assertEqual(snippet["title"], "BMW M340i Is Underrated")
         self.assertEqual(snippet["description"], "AI automotive description")
-        self.assertEqual(snippet["tags"], ["BMW", "M340i"])
+        self.assertEqual(
+            snippet["tags"][:len(DEFAULT_AUTOMOTIVE_TAGS)],
+            DEFAULT_AUTOMOTIVE_TAGS,
+        )
+        self.assertIn("BMW performance", snippet["tags"])
+        self.assertNotIn("storytime", snippet["tags"])
+        self.assertNotIn("relationship drama", snippet["tags"])
         self.assertEqual(snippet["categoryId"], "2")
         gemini.assert_not_called()
 
@@ -219,8 +267,16 @@ class UploadJobTitleTests(unittest.TestCase):
         self.assertEqual(snippet["title"], "Why Audi Quattro Works")
         self.assertEqual(
             snippet["description"],
-            "Why Audi Quattro Works\n\n#Cars #Automotive #Shorts",
+            (
+                "Why Audi Quattro Works\n\n"
+                "Automotive content featuring cars, performance, technology, "
+                "and car culture.\n\n"
+                "Subscribe to The Auto Pit for automotive Shorts.\n\n"
+                "#Shorts #Cars #Automotive"
+            ),
         )
+        self.assertIn("Audi performance", snippet["tags"])
+        self.assertIn("Audi Quattro", snippet["tags"])
         groq.assert_not_called()
         gemini.assert_not_called()
 
@@ -266,11 +322,147 @@ class UploadJobTitleTests(unittest.TestCase):
         self.assertEqual(snippet["title"], "Mercedes AMG vs BMW M")
         self.assertEqual(
             snippet["description"],
-            "Mercedes AMG vs BMW M\n\n#Cars #Automotive #Shorts",
+            (
+                "Mercedes AMG vs BMW M\n\n"
+                "Automotive content featuring cars, performance, technology, "
+                "and car culture.\n\n"
+                "Subscribe to The Auto Pit for automotive Shorts.\n\n"
+                "#Shorts #Cars #Automotive"
+            ),
         )
         self.assertEqual(snippet["categoryId"], "2")
         self.assertIn("Groq metadata failed", "\n".join(logs.output))
         self.assertIn("Gemini metadata failed", "\n".join(logs.output))
+
+    def test_invalid_ai_payload_uses_local_automotive_metadata(self):
+        result, request, _, gemini = self._run_job(
+            "Porsche 911 Explained.mp4",
+            ai_meta=["not", "an", "object"],
+        )
+        snippet = request["body"]["snippet"]
+
+        self.assertEqual(result["title"], "Porsche 911 Explained")
+        self.assertEqual(
+            snippet["description"],
+            (
+                "Porsche 911 Explained\n\n"
+                "Automotive content featuring cars, performance, technology, "
+                "and car culture.\n\n"
+                "Subscribe to The Auto Pit for automotive Shorts.\n\n"
+                "#Shorts #Cars #Automotive"
+            ),
+        )
+        self.assertIn("Porsche", snippet["tags"])
+        gemini.assert_not_called()
+
+    def test_keyword_mapping_is_configurable_and_deduplicated(self):
+        config = {
+            "automotive_metadata": {
+                "keyword_tags": {
+                    "miata": ["Mazda MX-5", "roadster", "cars", "ROADSTER"],
+                    "track": ["track cars", "motorsport"],
+                },
+            },
+        }
+
+        tags = uploader.build_video_tags("Track Ready Miata.mp4", config)
+
+        self.assertEqual(
+            tags[:len(DEFAULT_AUTOMOTIVE_TAGS)],
+            DEFAULT_AUTOMOTIVE_TAGS,
+        )
+        self.assertIn("Mazda MX-5", tags)
+        self.assertIn("roadster", tags)
+        self.assertIn("track cars", tags)
+        self.assertEqual(
+            len(tags),
+            len({tag.casefold() for tag in tags}),
+        )
+
+    def test_required_brand_keyword_mappings(self):
+        cases = {
+            "Mercedes AMG vs BMW M": {
+                "Mercedes-Benz",
+                "Mercedes AMG",
+                "BMW",
+                "BMW cars",
+                "BMW performance",
+            },
+            "Toyota Reliability Explained": {"Toyota", "Toyota cars"},
+            "BMW_M340i": {"BMW", "BMW M340i"},
+            "Audi_Quattro": {"Audi", "Audi Quattro", "AWD"},
+        }
+
+        for title, expected_tags in cases.items():
+            with self.subTest(title=title):
+                tags = uploader.build_video_tags(title, {})
+                self.assertTrue(expected_tags.issubset(tags))
+
+    def test_ambiguous_unrelated_keywords_do_not_add_automotive_tags(self):
+        titles = (
+            "Cats vs Dogs",
+            "Emergency Call 911",
+            "New Music Track",
+            "Employee Manual",
+            "Electric Guitar Basics",
+        )
+
+        for title in titles:
+            with self.subTest(title=title):
+                self.assertEqual(
+                    uploader.build_video_tags(title, {}),
+                    DEFAULT_AUTOMOTIVE_TAGS,
+                )
+
+    def test_tag_builder_respects_youtube_character_limit_and_tag_cap(self):
+        long_tags = [
+            f"BMW detailed performance topic number {index}"
+            for index in range(50)
+        ]
+        config = {
+            "automotive_metadata": {
+                "default_tags": [*DEFAULT_AUTOMOTIVE_TAGS, "CARS"],
+                "max_tags": 100,
+                "keyword_tags": {
+                    "bmw": ["BMW", *long_tags],
+                },
+            },
+        }
+
+        tags = uploader.build_video_tags("BMW Performance.mp4", config)
+
+        self.assertEqual(
+            tags[:len(DEFAULT_AUTOMOTIVE_TAGS)],
+            DEFAULT_AUTOMOTIVE_TAGS,
+        )
+        self.assertLessEqual(
+            uploader._youtube_tag_character_count(tags),
+            uploader.YOUTUBE_TAG_CHARACTER_LIMIT,
+        )
+        self.assertEqual(
+            len(tags),
+            len({tag.casefold() for tag in tags}),
+        )
+
+    def test_automotive_prompts_contain_no_legacy_story_metadata(self):
+        prompts = f"{uploader._VISION_PROMPT}\n{uploader._TEXT_ONLY_PROMPT}".casefold()
+        forbidden = (
+            "text-message",
+            "text message",
+            "minecraft",
+            "relationship",
+            "cheating",
+            "betrayal",
+            "storytime",
+            "story reel",
+        )
+
+        self.assertIn("automotive", prompts)
+        self.assertNotIn('"title"', prompts)
+        self.assertNotIn('"tags"', prompts)
+        for term in forbidden:
+            with self.subTest(term=term):
+                self.assertNotIn(term, prompts)
 
     def test_invalid_filename_titles_are_logged_and_rejected_before_download(self):
         cases = (
