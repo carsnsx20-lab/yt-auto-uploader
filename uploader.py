@@ -7,7 +7,6 @@ import io
 import json
 import logging
 import os
-import random
 import socket
 import sys
 import tempfile
@@ -74,7 +73,8 @@ log = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "upload_time":          "09:00",   # HH:MM local time
     "privacy_status":       "public",  # public | unlisted | private
-    "default_category":     "22",      # fallback YouTube category ID
+    "default_category":     "2",       # Autos & Vehicles
+    "ai_metadata_enabled":  True,      # optional AI descriptions and tags
     "gemini_api_key":       "",        # aistudio.google.com/app/apikey
     "gemini_extra_prompt":  "",        # extra instructions for Gemini
     "drive_queue_folder_id": "",       # Drive folder ID where your videos live
@@ -215,29 +215,6 @@ def download_drive_file(drive, file_id: str, dest_path: Path) -> None:
     buf.close()
 
 
-# ---------------------------------------------------------------------------
-# Gemini — AI metadata generation
-# ---------------------------------------------------------------------------
-METADATA_PROMPT = """You are a YouTube Shorts SEO expert. Watch this short vertical video reel and generate metadata optimised for YouTube Shorts discovery.
-
-Return ONLY a valid JSON object — no markdown, no explanation, just raw JSON:
-{{
-  "title": "Compelling title ending with #Shorts — 75 characters max total",
-  "description": "2-3 punchy lines. Relevant hashtags at end: #Shorts #shortsvideo #reels",
-  "tags": ["Shorts", "shortsvideo", "reels", "tag1", "tag2"],
-  "categoryId": "24"
-}}
-
-Rules:
-- Title MUST end with #Shorts (e.g. "She Waited Her Whole Life For This #Shorts")
-- tags: always include "Shorts", "shortsvideo", "reels" plus 8-10 relevant topical tags
-- Description: 2-3 lines only — Shorts viewers scroll fast, keep it punchy, no paragraphs
-- categoryId must be exactly one of: 1, 2, 10, 15, 17, 19, 20, 22, 23, 24, 25, 26, 27, 28
-- Prefer categoryId 24 (Entertainment) or 22 (People & Blogs) for story reels
-- Title must trigger curiosity or strong emotion — make people stop mid-scroll instantly
-{extra}"""
-
-
 def _find_ff(name: str) -> str:
     """Find ffmpeg or ffprobe — checks PATH, then WinGet install folder."""
     import shutil, glob as _glob
@@ -290,60 +267,46 @@ def _extract_video_frames(video_path: Path, n: int = 3) -> list[Path]:
     return frames
 
 
-_VISION_PROMPT = """You are a viral YouTube Shorts expert. You are looking at {n} screenshots taken from a short text-message story reel.
+_VISION_PROMPT = """You are an automotive YouTube Shorts metadata expert. You are looking at {n} screenshots from a car video.
 
-CRITICAL — what is on screen:
-- FOREGROUND: An iPhone text message conversation (the actual content)
-- BACKGROUND: Minecraft parkour gameplay or similar gaming footage (completely ignore this)
+The exact video title is already fixed from its Google Drive filename: {video_title}
+Do not generate, rewrite, or return a title.
 
-YOUR JOB:
-1. Read EVERY text message bubble you can see across all screenshots in order
-2. Understand the full story arc: who is texting whom, what drama/situation is unfolding, what is the twist or reveal
-3. Write metadata that makes someone STOP SCROLLING instantly
-
-Return ONLY a valid JSON object — no markdown, no explanation:
+Analyze the visible vehicle, driving scene, components, and automotive topic. Return ONLY a valid JSON object — no markdown or explanation:
 {{
-  "title": "Suspenseful title based on the ACTUAL story in the texts — end with #Shorts — max 80 chars",
-  "description": "Most shocking moment from the story — make it feel like a punch.\\nYou won't believe what happens next… watch till the end.\\n👍 Like & Subscribe for daily text story reels!\\n\\n#Shorts #shortsvideo #reels #textstory #textmessage #storytime #drama #viral #fyp #foryoupage #trending #relationship #exposed",
-  "tags": ["Shorts","shortsvideo","reels","textstory","textmessage","storytime","drama","viral","fyp","foryoupage","trending","relationship","exposed","shocking","mustwatch","satisfying","cheating","betrayal","revenge","heartbreak","twist","unbelievable","realstory","textprank","iphone"],
-  "categoryId": "24"
-}}
-
-TITLE RULES (critical):
-- Base it on what ACTUALLY happens in the texts — specific, not generic
-- Use power phrases: "He Finally Admitted", "She Found The Texts", "The Truth Came Out", "Nobody Expected This", "He Didn't Know She Saw Everything"
-- Create unbearable curiosity — viewer must feel they NEED to see what happens
-- Vary the style: sometimes start with "She", "He", "They", "The", "I"
-- NEVER use generic titles like "This Story Will Shock You"
-
-DESCRIPTION RULES:
-- First line = the most jaw-dropping moment written as a statement (NO labels like "Line 1:")
-- Second line = tease the twist without revealing it (e.g. "You won't believe what he said next…")
-- Third line = "👍 Like & Subscribe for daily text story reels!" (exactly like this)
-- Then a blank line, then all hashtags
-- Do NOT write "Line 1" or "Line 2" or any labels — just write the actual text
-{extra}"""
-
-_TEXT_ONLY_PROMPT = """You are a viral YouTube Shorts expert. Generate metadata for a short vertical text-message story reel (iPhone chat bubbles over a gaming background).
-
-Return ONLY a valid JSON object:
-{{
-  "title": "Suspenseful dramatic title ending with #Shorts — max 80 chars",
-  "description": "Most shocking moment from the story — make it feel like a punch.\\nYou won't believe what happens next… watch till the end.\\n👍 Like & Subscribe for daily text story reels!\\n\\n#Shorts #shortsvideo #reels #textstory #textmessage #storytime #drama #viral #fyp #foryoupage #trending #relationship #exposed",
-  "tags": ["Shorts","shortsvideo","reels","textstory","textmessage","storytime","drama","viral","fyp","foryoupage","trending","relationship","exposed","shocking","mustwatch","satisfying","cheating","betrayal","revenge","heartbreak","twist","unbelievable","realstory","textprank","iphone"],
-  "categoryId": "24"
+  "description": "A concise, accurate automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",
+  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]
 }}
 
 Rules:
-- Title MUST end with #Shorts and create unbearable curiosity
-- Use power phrases like "She Found Out", "He Admitted Everything", "The Twist Nobody Saw Coming"
-- Every title must be UNIQUE — vary the angle each time
-- Make the description hook feel like a punch to the gut
+- Discuss only automotive content supported by the screenshots or fixed title.
+- Keep the description concise and useful.
+- Include relevant makes, models, systems, or comparison terms in tags when supported.
+- Do not return title or categoryId fields.
+{extra}"""
+
+_TEXT_ONLY_PROMPT = """You are an automotive YouTube Shorts metadata expert.
+
+The exact video title is already fixed from its Google Drive filename: {video_title}
+Do not generate, rewrite, or return a title.
+
+Use that title as context and return ONLY a valid JSON object:
+{{
+  "description": "A concise automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",
+  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]
+}}
+
+Rules:
+- Keep the description accurate to the fixed title; do not invent unsupported specifications.
+- Include relevant makes, models, systems, or comparison terms in tags.
+- Do not return title or categoryId fields.
 {extra}"""
 
 
-def generate_metadata_with_groq(config: dict, video_path: Path = None) -> dict | None:
-    """Generate metadata using Groq vision (reads actual iPhone chat frames) or text fallback."""
+def generate_metadata_with_groq(
+    config: dict, video_path: Path = None, video_title: str = ""
+) -> dict | None:
+    """Generate optional automotive descriptions and tags with Groq."""
     import base64
     api_key = config.get("groq_api_key", "").strip()
     if not api_key:
@@ -375,7 +338,9 @@ def generate_metadata_with_groq(config: dict, video_path: Path = None) -> dict |
                     try: fp.unlink()
                     except Exception: pass
 
-            prompt = _VISION_PROMPT.format(n=len(image_parts), extra=extra_line)
+            prompt = _VISION_PROMPT.format(
+                n=len(image_parts), video_title=video_title, extra=extra_line
+            )
             messages = [{"role": "user", "content": image_parts + [{"type": "text", "text": prompt}]}]
             model    = "meta-llama/llama-4-scout-17b-16e-instruct"
 
@@ -389,7 +354,7 @@ def generate_metadata_with_groq(config: dict, video_path: Path = None) -> dict |
 
     # ── Text-only fallback ──
     log.info("Generating metadata with Groq AI (text mode)…")
-    prompt = _TEXT_ONLY_PROMPT.format(extra=extra_line)
+    prompt = _TEXT_ONLY_PROMPT.format(video_title=video_title, extra=extra_line)
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -410,8 +375,6 @@ def _parse_groq_response(raw: str) -> dict | None:
         raw   = parts[1][4:].strip() if parts[1].startswith("json") else parts[1].strip()
     try:
         metadata = json.loads(raw)
-        log.info(f"  Title    : {metadata.get('title', '???')}")
-        log.info(f"  Category : {metadata.get('categoryId', '???')}")
         log.info(f"  Tags ({len(metadata.get('tags', []))}): {metadata.get('tags', [])}")
         return metadata
     except json.JSONDecodeError as e:
@@ -419,7 +382,9 @@ def _parse_groq_response(raw: str) -> dict | None:
         return None
 
 
-def generate_metadata_with_gemini(video_path: Path, config: dict) -> dict | None:
+def generate_metadata_with_gemini(
+    video_path: Path, config: dict, video_title: str = ""
+) -> dict | None:
     api_key = config.get("gemini_api_key") or os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         log.warning("No Gemini API key — skipping AI metadata.")
@@ -428,21 +393,20 @@ def generate_metadata_with_gemini(video_path: Path, config: dict) -> dict | None
     client = genai.Client(api_key=api_key)
     extra  = config.get("gemini_extra_prompt", "").strip()
 
-    # ── Text-only generation (no video upload — works on all free tier regions) ──
+    # Text-only generation uses the filename title as automotive context.
     text_prompt = (
-        "You are a YouTube Shorts SEO expert. Generate viral metadata for a short vertical "
-        "text-message story reel video.\n\n"
+        "You are an automotive YouTube Shorts metadata expert.\n\n"
+        f"The exact video title is already fixed from its Google Drive filename: {video_title}\n"
+        "Do not generate, rewrite, or return a title.\n\n"
         "Return ONLY a valid JSON object — no markdown, no explanation:\n"
-        "{{\n"
-        '  "title": "Compelling dramatic title ending with #Shorts — 75 chars max",\n'
-        '  "description": "2-3 punchy lines. End with: #Shorts #shortsvideo #reels #textstory",\n'
-        '  "tags": ["Shorts","shortsvideo","reels","textstory","storytime","textmessage","viralshorts","drama"],\n'
-        '  "categoryId": "24"\n'
-        "}}\n\n"
+        "{\n"
+        '  "description": "A concise automotive description followed by relevant car hashtags including #Cars #Automotive #Shorts",\n'
+        '  "tags": ["Cars", "Automotive", "Shorts", "specific vehicle and topic tags"]\n'
+        "}\n\n"
         "Rules:\n"
-        "- Title MUST end with #Shorts\n"
-        "- Make it dramatic, emotional, curiosity-driven — stop-the-scroll energy\n"
-        "- Category 24 (Entertainment) for story reels\n"
+        "- Keep the description accurate to the fixed title; do not invent unsupported specifications.\n"
+        "- Include relevant makes, models, systems, or comparison terms in tags.\n"
+        "- Do not return title or categoryId fields.\n"
         f"{('- Additional: ' + extra) if extra else ''}"
     )
 
@@ -483,8 +447,6 @@ def generate_metadata_with_gemini(video_path: Path, config: dict) -> dict | None
         log.error(f"Gemini returned invalid JSON: {e}\nOutput: {raw[:500]}")
         return None
 
-    log.info(f"  Title    : {metadata.get('title', '???')}")
-    log.info(f"  Category : {metadata.get('categoryId', '???')}")
     log.info(f"  Tags ({len(metadata.get('tags', []))}): {metadata.get('tags', [])}")
     return metadata
 
@@ -535,31 +497,6 @@ def upload_to_youtube(youtube, video_path: Path, meta: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Fallback title when Gemini is unavailable
-# ---------------------------------------------------------------------------
-_FALLBACK_TITLES = [
-    "This Story Will Break Your Heart #Shorts",
-    "You Won't Believe How This Ended #Shorts",
-    "The Truth Finally Came Out #Shorts",
-    "She Had No Idea What Was Coming #Shorts",
-    "Nobody Saw This Coming #Shorts",
-    "The Most Unexpected Ending #Shorts",
-    "He Thought He Could Hide It #Shorts",
-    "This Changed Everything #Shorts",
-    "Wait For The Twist #Shorts",
-    "The Message That Said It All #Shorts",
-    "She Finally Found Out The Truth #Shorts",
-    "This Is Why You Should Always Check #Shorts",
-    "The Text That Ruined Everything #Shorts",
-    "I Can't Believe This Happened #Shorts",
-    "The Secret Was Out #Shorts",
-]
-
-def _fallback_title(file_name: str) -> str:
-    return random.choice(_FALLBACK_TITLES)
-
-
-# ---------------------------------------------------------------------------
 # Daily job
 # ---------------------------------------------------------------------------
 def upload_job(channel_config: dict = None, publish_at=None) -> "dict | None":
@@ -596,6 +533,19 @@ def upload_job(channel_config: dict = None, publish_at=None) -> "dict | None":
     file_size = int(video_file.get("size", 0))
     log.info(f"Next video: {file_name} ({file_size / 1_048_576:.1f} MB)")
 
+    video_title = Path(file_name).stem.strip()
+    if not video_title:
+        message = f"Cannot upload Drive file {file_name!r}: filename produces an empty YouTube title."
+        log.error(message)
+        raise ValueError(message)
+    if len(video_title) > 100:
+        message = (
+            f"Cannot upload Drive file {file_name!r}: filename-derived YouTube title "
+            f"is {len(video_title)} characters; maximum is 100."
+        )
+        log.error(message)
+        raise ValueError(message)
+
     suffix = Path(file_name).suffix or ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -605,30 +555,33 @@ def upload_job(channel_config: dict = None, publish_at=None) -> "dict | None":
         download_drive_file(drive, file_id, tmp_path)
         log.info("Download complete.")
 
-        # Try Groq first (reads actual video frames), fall back to Gemini text-only
-        ai_meta = generate_metadata_with_groq(config, video_path=tmp_path) or generate_metadata_with_gemini(tmp_path, config)
-
-        if ai_meta:
-            title = ai_meta.get("title", Path(file_name).stem)
-            # Safety net: always include #Shorts for YouTube Shorts detection
-            if "#shorts" not in title.lower() and len(title) + 8 <= 100:
-                title += " #Shorts"
-            meta = {
-                "title":         title,
-                "description":   ai_meta.get("description", ""),
-                "tags":          ai_meta.get("tags", []),
-                "categoryId":    ai_meta.get("categoryId", config["default_category"]),
-                "privacyStatus": config["privacy_status"],
-            }
+        # AI metadata is optional and can enrich only the description and tags.
+        ai_meta = None
+        if config.get("ai_metadata_enabled", True):
+            try:
+                ai_meta = generate_metadata_with_groq(
+                    config, video_path=tmp_path, video_title=video_title
+                )
+            except Exception as e:
+                log.warning(f"Groq metadata failed ({e}) — trying Gemini.")
+            if not ai_meta:
+                try:
+                    ai_meta = generate_metadata_with_gemini(
+                        tmp_path, config, video_title=video_title
+                    )
+                except Exception as e:
+                    log.warning(f"Gemini metadata failed ({e}) — using fallback metadata.")
         else:
-            log.warning("No AI metadata — using smart fallback title.")
-            meta = {
-                "title":         _fallback_title(file_name),
-                "description":   "Follow for more text story reels every day! #Shorts #shortsvideo #reels #textstory",
-                "tags":          ["Shorts", "shortsvideo", "reels", "textstory", "storytime", "textmessage", "viralshorts"],
-                "categoryId":    "24",
-                "privacyStatus": config["privacy_status"],
-            }
+            log.info("AI metadata disabled — using filename-based automotive metadata.")
+
+        fallback_description = f"{video_title}\n\n#Cars #Automotive #Shorts"
+        meta = {
+            "title":         video_title,
+            "description":   (ai_meta or {}).get("description") or fallback_description,
+            "tags":          (ai_meta or {}).get("tags") or ["Cars", "Automotive", "Shorts"],
+            "categoryId":    "2",
+            "privacyStatus": config["privacy_status"],
+        }
 
         log.info(f"  Title   : {meta['title']}")
         log.info(f"  Privacy : {meta['privacyStatus']}")
